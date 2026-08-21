@@ -5,4 +5,3 @@ Project Lead: Roger Madhu
 Other Participants: Sanya Peter, Uchenna Obikwelu, Chigozirim Eke
 Project Title: Pipeline Doctor
 Team Name: Pipeline Medics
-GitHub ID: https://github.com/rogermadhu rogermadhu@gmail.com
