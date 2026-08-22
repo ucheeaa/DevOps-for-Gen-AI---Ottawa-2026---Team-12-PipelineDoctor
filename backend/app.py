@@ -53,6 +53,55 @@ _events: dict[str, dict] = {}       # event_id -> {event, result}
 _approvals: dict[str, dict] = {}    # fix_id    -> approval record
 
 
+def _load_from_s3():
+    """Load Lambda results from S3 into the in-memory store."""
+    bucket = os.getenv("S3_LOG_BUCKET", "pipeline-doctor-logs-714665049802")
+    region = os.getenv("S3_REGION", "us-east-2")
+    try:
+        import boto3
+        s3 = boto3.client("s3", region_name=region)
+        response = s3.list_objects_v2(Bucket=bucket, Prefix="results/")
+        for obj in response.get("Contents", []):
+            key = obj["Key"]
+            try:
+                data = s3.get_object(Bucket=S3_BUCKET, Key=key)
+                result = json.loads(data["Body"].read().decode("utf-8"))
+                event_id = result.get("event_id", key)
+                if event_id and event_id not in _events:
+                    _events[event_id] = {
+                        "event": {
+                            "event_id": event_id,
+                            "pipeline_id": result.get("fix", {}).get("fix_id", ""),
+                            "source": "aws_lambda",
+                            "status": "FAILED" if result.get("status") != "pass_no_remedy" else "PASSED",
+                            "stage": "",
+                            "error": result.get("message", ""),
+                        },
+                        "result": result,
+                        "ingested_at": obj["LastModified"].isoformat() if hasattr(obj["LastModified"], "isoformat") else str(obj["LastModified"]),
+                    }
+                    # Register approvals
+                    fix = result.get("fix")
+                    if fix and result.get("fix_status") == "awaiting_approval":
+                        fix_id = fix.get("fix_id")
+                        if fix_id and fix_id not in _approvals:
+                            _approvals[fix_id] = {
+                                "fix_id": fix_id,
+                                "event_id": event_id,
+                                "fix": fix,
+                                "status": "pending",
+                                "created_at": _events[event_id]["ingested_at"],
+                                "pipeline_id": event_id,
+                                "stage": "",
+                                "error": result.get("message", ""),
+                            }
+            except Exception:
+                pass
+        log.info("s3_results_loaded", count=len(_events))
+    except Exception as exc:
+        log.warning("s3_load_failed", error=str(exc))
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
@@ -142,6 +191,49 @@ async def ingest_event_result(payload: EventResultPayload):
 @app.get("/api/events")
 def list_events(limit: int = 50, status: Optional[str] = None):
     """Return recent events, optionally filtered by status."""
+    # If empty, load from S3
+    if not _events:
+        bucket = os.getenv("S3_LOG_BUCKET", "pipeline-doctor-logs-714665049802")
+        region = os.getenv("S3_REGION", "us-east-2")
+        try:
+            import boto3
+            s3 = boto3.client("s3", region_name=region)
+            response = s3.list_objects_v2(Bucket=bucket, Prefix="results/")
+            for obj in response.get("Contents", []):
+                key = obj["Key"]
+                try:
+                    data = s3.get_object(Bucket=bucket, Key=key)
+                    result = json.loads(data["Body"].read().decode("utf-8"))
+                    event_id = result.get("event_id") or key
+                    _events[event_id] = {
+                        "event": {
+                            "event_id": event_id,
+                            "pipeline_id": event_id.replace("s3-logs-", "").replace(".txt", ""),
+                            "source": "aws_lambda",
+                            "status": "FAILED",
+                            "stage": result.get("fix", {}).get("steps", [""])[0][:40] if result.get("fix") else "",
+                            "error": result.get("message", ""),
+                        },
+                        "result": result,
+                        "ingested_at": str(obj["LastModified"]),
+                    }
+                    fix = result.get("fix")
+                    if fix and result.get("fix_status") == "awaiting_approval":
+                        fix_id = fix.get("fix_id")
+                        if fix_id:
+                            _approvals[fix_id] = {
+                                "fix_id": fix_id, "event_id": event_id,
+                                "fix": fix, "status": "pending",
+                                "created_at": str(obj["LastModified"]),
+                                "pipeline_id": event_id.replace("s3-logs-", "").replace(".txt", ""),
+                                "stage": "", "error": result.get("message", ""),
+                            }
+                except Exception:
+                    pass
+            log.info("s3_loaded", count=len(_events))
+        except Exception as exc:
+            log.warning("s3_load_failed", error=str(exc))
+
     items = list(_events.values())
     items.sort(key=lambda x: x.get("ingested_at", ""), reverse=True)
 
