@@ -30,6 +30,9 @@ from typing import Any, Optional
 
 import boto3
 import structlog
+from dotenv import load_dotenv
+
+load_dotenv()  # Load .env file
 
 from agent.models import (
     DiagnosisResult,
