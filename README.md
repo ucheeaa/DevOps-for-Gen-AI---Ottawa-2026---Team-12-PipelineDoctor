@@ -44,15 +44,31 @@ You should see the account ID `714665049802`. If it says "expired" or "no creden
 Go to AWS Console > Amazon Bedrock > Model access (us-east-1 region) and make sure Claude Sonnet is enabled. If not, click "Manage model access" and enable it.
 
 ### 5. Run the setup script
+
+**Mac/Linux:**
 ```bash
 chmod +x setup.sh && ./setup.sh
 ```
+
+**Windows (Command Prompt or PowerShell):**
+```cmd
+setup.bat
+```
+
 This creates the Python virtual environment, installs all dependencies, and installs the frontend.
 
 ### 6. Start the backend (Terminal 1)
+
+**Mac/Linux:**
 ```bash
 source .venv/bin/activate && python3 -m uvicorn backend.app:app --port 8000 --reload
 ```
+
+**Windows:**
+```cmd
+.venv\Scripts\activate && python -m uvicorn backend.app:app --port 8000 --reload
+```
+
 You should see: `Uvicorn running on http://0.0.0.0:8000`
 
 ### 7. Start the frontend (Terminal 2 - separate terminal)
