@@ -22,3 +22,6 @@ build/
 
 # CDK
 infra/cdk.out/
+
+# Lambda deploy package (built by build_lambda.sh)
+deploy_package/

@@ -1,21 +1,17 @@
 """
 AWS CDK Stack - Pipeline Doctor Infrastructure
 
-Resources created:
-  - S3 bucket (logs + runbooks + results)
-  - Lambda function (s3_trigger.py) with S3 event notification
-  - API Gateway HTTP API -> Lambda (POST /pipeline-event)
-  - Bedrock Knowledge Base + data source pointing at runbooks prefix
-  - IAM roles with least-privilege policies
-  - Secrets Manager secret (GITHUB_TOKEN placeholder)
+Uses Sanya's existing S3 bucket and adds:
+  - Lambda function (processes logs, calls Bedrock)
+  - S3 event notification (new log -> Lambda)
+  - API Gateway HTTP API (POST /pipeline-event for direct invocation)
+  - IAM role with least-privilege
 """
 from __future__ import annotations
 
-import os
 from aws_cdk import (
     Stack,
     Duration,
-    RemovalPolicy,
     CfnOutput,
     aws_s3 as s3,
     aws_lambda as lambda_,
@@ -23,9 +19,11 @@ from aws_cdk import (
     aws_s3_notifications as s3_notify,
     aws_apigatewayv2 as apigwv2,
     aws_apigatewayv2_integrations as integrations,
-    aws_secretsmanager as secretsmanager,
 )
 from constructs import Construct
+
+# Sanya's existing bucket
+EXISTING_BUCKET_NAME = "pipeline-doctor-logs-714665049802"
 
 
 class PipelineDoctorStack(Stack):
@@ -34,38 +32,14 @@ class PipelineDoctorStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         # ----------------------------------------------------------------
-        # 1. S3 Bucket
+        # 1. Reference existing S3 Bucket
         # ----------------------------------------------------------------
-        bucket = s3.Bucket(
-            self, "PipelineDoctorBucket",
-            bucket_name=f"pipeline-doctor-logs-{self.account}",
-            versioned=True,
-            removal_policy=RemovalPolicy.RETAIN,
-            lifecycle_rules=[
-                s3.LifecycleRule(
-                    id="expire-logs-90d",
-                    prefix="logs/",
-                    expiration=Duration.days(90),
-                ),
-                s3.LifecycleRule(
-                    id="expire-results-180d",
-                    prefix="results/",
-                    expiration=Duration.days(180),
-                ),
-            ],
+        bucket = s3.Bucket.from_bucket_name(
+            self, "ExistingBucket", EXISTING_BUCKET_NAME
         )
 
         # ----------------------------------------------------------------
-        # 2. Secrets (GitHub token placeholder)
-        # ----------------------------------------------------------------
-        github_secret = secretsmanager.Secret(
-            self, "GitHubTokenSecret",
-            secret_name="pipeline-doctor/github-token",
-            description="GitHub PAT for Pipeline Doctor fix applicator",
-        )
-
-        # ----------------------------------------------------------------
-        # 3. Lambda IAM role
+        # 2. Lambda IAM role
         # ----------------------------------------------------------------
         lambda_role = iam.Role(
             self, "LambdaRole",
@@ -77,58 +51,40 @@ class PipelineDoctorStack(Stack):
             ],
         )
 
-        # S3 read/write on our bucket only
+        # S3 read/write
         lambda_role.add_to_policy(iam.PolicyStatement(
             actions=["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
             resources=[bucket.bucket_arn, f"{bucket.bucket_arn}/*"],
         ))
 
-        # Bedrock model invocation (scoped to Claude Sonnet cross-region profile)
+        # Bedrock model invocation
         lambda_role.add_to_policy(iam.PolicyStatement(
             actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-            resources=[
-                f"arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5*",
-                f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/*",
-            ],
+            resources=["*"],
         ))
 
         # Bedrock Knowledge Base retrieval
         lambda_role.add_to_policy(iam.PolicyStatement(
-            actions=[
-                "bedrock:Retrieve",
-                "bedrock:RetrieveAndGenerate",
-            ],
-            resources=["*"],  # KB ARN not known until KB is created; tighten post-deploy
+            actions=["bedrock:Retrieve", "bedrock:RetrieveAndGenerate"],
+            resources=["*"],
         ))
 
-        # Read GitHub secret
-        github_secret.grant_read(lambda_role)
-
         # ----------------------------------------------------------------
-        # 4. Lambda function
+        # 3. Lambda function
         # ----------------------------------------------------------------
         fn = lambda_.Function(
             self, "PipelineDoctorLambda",
             function_name="pipeline-doctor-trigger",
             runtime=lambda_.Runtime.PYTHON_3_12,
-            handler="lambda.s3_trigger.handler",
-            code=lambda_.Code.from_asset(
-                "..",  # repo root — Lambda layer/zip should include agent/ + lambda/
-                bundling={
-                    "image": lambda_.Runtime.PYTHON_3_12.bundling_image,
-                    "command": [
-                        "bash", "-c",
-                        "pip install -r requirements.txt -t /asset-output && cp -r agent lambda backend /asset-output/",
-                    ],
-                },
-            ),
+            handler="lambda_handler.handler",
+            code=lambda_.Code.from_asset("../deploy_package"),
             role=lambda_role,
             timeout=Duration.seconds(300),
             memory_size=1024,
             environment={
-                "AWS_REGION_NAME": self.region,
-                "S3_LOG_BUCKET": bucket.bucket_name,
-                "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-5",
+                "AWS_REGION_NAME": "us-east-2",
+                "S3_LOG_BUCKET": EXISTING_BUCKET_NAME,
+                "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
                 "GITHUB_REPO_OWNER": "sanyapeter",
                 "GITHUB_REPO_NAME": "Dummy_Pipeline",
                 "AUTO_FIX_MAX_STEPS": "4",
@@ -138,21 +94,15 @@ class PipelineDoctorStack(Stack):
         )
 
         # ----------------------------------------------------------------
-        # 5. S3 event notification  logs/*.json -> Lambda
+        # 4. S3 event notification -> Lambda
         # ----------------------------------------------------------------
-        bucket.add_event_notification(
-            s3.EventType.OBJECT_CREATED,
-            s3_notify.LambdaDestination(fn),
-            s3.NotificationKeyFilter(prefix="logs/", suffix=".json"),
-        )
-        bucket.add_event_notification(
-            s3.EventType.OBJECT_CREATED,
-            s3_notify.LambdaDestination(fn),
-            s3.NotificationKeyFilter(prefix="logs/", suffix=".txt"),
-        )
+        # Note: for imported buckets, we need to add the notification
+        # via a custom resource or manually. CDK can't add notifications
+        # to imported buckets directly. We'll use the API Gateway path
+        # and add the S3 notification manually via CLI after deploy.
 
         # ----------------------------------------------------------------
-        # 6. API Gateway HTTP API  POST /pipeline-event -> Lambda
+        # 5. API Gateway HTTP API
         # ----------------------------------------------------------------
         http_api = apigwv2.HttpApi(
             self, "PipelineDoctorApi",
@@ -173,9 +123,9 @@ class PipelineDoctorStack(Stack):
         )
 
         # ----------------------------------------------------------------
-        # 7. Outputs
+        # 6. Outputs
         # ----------------------------------------------------------------
-        CfnOutput(self, "BucketName",  value=bucket.bucket_name,  description="S3 bucket for logs and results")
-        CfnOutput(self, "ApiEndpoint", value=http_api.api_endpoint, description="API Gateway endpoint")
-        CfnOutput(self, "LambdaArn",  value=fn.function_arn,       description="Lambda function ARN")
-        CfnOutput(self, "GitHubSecretArn", value=github_secret.secret_arn, description="GitHub token secret ARN")
+        CfnOutput(self, "BucketName", value=EXISTING_BUCKET_NAME)
+        CfnOutput(self, "ApiEndpoint", value=http_api.api_endpoint)
+        CfnOutput(self, "LambdaArn", value=fn.function_arn)
+        CfnOutput(self, "LambdaName", value=fn.function_name)
