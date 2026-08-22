@@ -257,47 +257,48 @@ async def _process_and_store(event_dict: dict) -> None:
 async def _apply_approved_fix(fix_id: str, record: dict) -> None:
     """Apply a fix that was just approved by a human."""
     try:
-        from agent.fix_applicator import FixApplicator
-        from agent.models import ProposedFix, RiskLevel, DiagnosisResult, FailureCategory, PipelineFailure
-        from datetime import datetime as dt
-
+        import os
         fix_data = record["fix"]
-        # Reconstruct a minimal ProposedFix from the stored dict
-        # (in production this would be fetched from DynamoDB)
+
+        # If no GitHub token, just mark as approved (can't open a PR)
+        if not os.getenv("GITHUB_TOKEN"):
+            record["applied"] = False
+            record["applied_at"] = datetime.utcnow().isoformat()
+            record["note"] = "GITHUB_TOKEN not set - fix approved but PR not opened. Set token in .env to enable auto-PR."
+            log.info("approved_fix_no_token", fix_id=fix_id)
+            return
+
+        from agent.fix_applicator import FixApplicator
+
         event_record = _events.get(record["event_id"], {})
         event = event_record.get("event", {})
 
         applicator = FixApplicator()
-        # Build a lightweight stub — enough for the applicator to open a PR
+
         class _FixStub:
-            fix_id = fix_data["fix_id"]
-            description = fix_data["description"]
-            steps = fix_data["steps"]
-            file_changes = fix_data["file_changes"]
-            risk_level = type("R", (), {"value": fix_data["risk_level"]})()
-            pr_title = fix_data.get("pr_title", "")
-            pr_body = fix_data.get("pr_body", "")
-            approval_reason = fix_data.get("approval_reason", "")
-            pr_url: str | None = None
+            pass
 
         stub = _FixStub()
-        success = applicator.apply(stub, event)  # type: ignore
+        stub.fix_id = fix_data["fix_id"]
+        stub.description = fix_data["description"]
+        stub.steps = fix_data["steps"]
+        stub.file_changes = fix_data["file_changes"]
+        stub.risk_level = type("R", (), {"value": fix_data["risk_level"]})()
+        stub.pr_title = fix_data.get("pr_title", "")
+        stub.pr_body = fix_data.get("pr_body", "")
+        stub.approval_reason = fix_data.get("approval_reason", "")
+        stub.pr_url = None
+
+        success = applicator.apply(stub, event)
 
         record["applied"] = success
         record["pr_url"] = getattr(stub, "pr_url", None)
         record["applied_at"] = datetime.utcnow().isoformat()
-
-        # Notify via Slack
-        from agent.notifier import SlackNotifier
-        SlackNotifier().send_fix_result(
-            fix_id=fix_id,
-            success=success,
-            pr_url=record.get("pr_url"),
-            message=fix_data["description"],
-        )
-
         log.info("approved_fix_applied", fix_id=fix_id, success=success)
+
     except Exception as exc:
+        record["applied"] = False
+        record["applied_at"] = datetime.utcnow().isoformat()
         log.error("approved_fix_apply_failed", fix_id=fix_id, error=str(exc))
 
 
