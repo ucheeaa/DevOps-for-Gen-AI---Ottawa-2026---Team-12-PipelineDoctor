@@ -1,0 +1,38 @@
+# Core agent framework
+boto3==1.38.0
+botocore==1.38.0
+strand-sdk==0.1.0
+
+# Web framework (backend API)
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.0
+
+# GitHub integration
+PyGithub==2.5.0
+
+# HTTP client
+httpx==0.27.0
+requests==2.32.0
+
+# AWS utilities
+aws-lambda-powertools==3.3.0
+
+# Data handling
+python-dotenv==1.0.0
+pyyaml==6.0.2
+python-dateutil==2.9.0
+
+# Slack notifications
+slack-sdk==3.33.0
+
+# Logging and observability
+structlog==24.4.0
+opentelemetry-sdk==1.28.0
+opentelemetry-exporter-otlp==1.28.0
+
+# Testing
+pytest==8.3.0
+pytest-asyncio==0.24.0
+pytest-mock==3.14.0
+moto[s3,bedrock]==5.0.0
