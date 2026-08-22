@@ -87,6 +87,9 @@ GitHub Actions / Jenkins runs build & tests
 
 ---
 
+## Dummy Test repo with pipeline examples
+https://github.com/sanyapeter/Dummy_Pipeline
+
 ## Quick Start (Step by Step)
 
 ### 1. Clone the repo
@@ -624,18 +627,6 @@ curl http://localhost:8000/health
 - S3 `results/` prefix: All processed events with full action traces
 - Dashboard `/api/stats`: Real-time success/failure metrics
 - Slack channel: Approval requests and fix results
-
----
-
-## Team Members
-
-| Name | Role |
-|---|---|
-| Uchenna | Team Lead, AWS Infrastructure, Backend |
-| Sanya (Peter) | Dummy Pipeline, GitHub Actions Integration |
-| [Team Member 3] | Frontend Dashboard |
-| [Team Member 4] | Agent Development |
-| [Team Member 5] | Testing & Documentation |
 
 ---
 
