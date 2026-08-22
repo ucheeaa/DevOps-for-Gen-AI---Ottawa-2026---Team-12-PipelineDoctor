@@ -106,6 +106,10 @@ class FixApplicator:
             )
             fix.pr_url = pr.html_url
             log.info("pr_opened", pr_url=pr.html_url, fix_id=fix.fix_id)
+
+            # ---- 4. Trigger pipeline re-run on the fix branch ----------
+            self._trigger_pipeline_rerun(repo, branch_name)
+
             return True
 
         except Exception as exc:
@@ -115,6 +119,26 @@ class FixApplicator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _trigger_pipeline_rerun(self, repo, branch_name: str) -> None:
+        """Trigger the CI pipeline on the fix branch to verify the fix works."""
+        try:
+            # Try workflow_dispatch (GitHub Actions manual trigger)
+            workflows = repo.get_workflows()
+            for wf in workflows:
+                if "ci" in wf.name.lower() or "pipeline" in wf.name.lower():
+                    wf.create_dispatch(ref=branch_name, inputs={"break_mode": "none"})
+                    log.info("pipeline_rerun_triggered", workflow=wf.name, branch=branch_name)
+                    return
+
+            # Fallback: the push to the fix branch should trigger CI automatically
+            # (most CI configs trigger on all branches or on PR creation)
+            log.info("pipeline_rerun_via_push", branch=branch_name,
+                     msg="No workflow_dispatch found - CI should trigger from the push/PR")
+        except Exception as exc:
+            # Non-fatal — the fix is still applied even if re-run fails
+            log.warning("pipeline_rerun_failed", error=str(exc),
+                        msg="Fix applied but could not trigger verification re-run")
 
     def _init_github_client(self):
         """Return a PyGithub Github instance, or None if token is missing."""
