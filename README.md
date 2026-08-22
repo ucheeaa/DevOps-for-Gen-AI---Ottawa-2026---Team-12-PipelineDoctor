@@ -238,10 +238,3 @@ curl -X POST http://localhost:8000/api/events \
 - **CI/CD**: GitHub Actions / Jenkins
 - **Notifications**: Slack
 
-## Team
-
-| Role | Owner |
-|---|---|
-| Architecture & System Integration | Uchenna |
-| Test Repo, RAG, Frontend | Sanya |
-| GitHub & Jenkins Setup | Chigo |
