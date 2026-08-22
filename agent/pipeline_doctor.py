@@ -46,7 +46,7 @@ from agent.rag_retriever import RAGRetriever
 log = structlog.get_logger(__name__)
 
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5")
+MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 
@@ -181,7 +181,8 @@ class PipelineDoctor:
             category = FailureCategory.CONFIGURATION_ERROR
 
         # Parse repo from source field or default
-        repo_parts = event.get("repo", "sanyapeter/Dummy_Pipeline").split("/")
+        repo_raw = event.get("repo") or "sanyapeter/Dummy_Pipeline"
+        repo_parts = repo_raw.split("/")
         repo_owner = repo_parts[0] if len(repo_parts) == 2 else "sanyapeter"
         repo_name = repo_parts[1] if len(repo_parts) == 2 else "Dummy_Pipeline"
 
