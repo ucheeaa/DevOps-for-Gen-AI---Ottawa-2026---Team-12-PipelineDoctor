@@ -310,50 +310,56 @@ async def _process_and_store(event_dict: dict) -> None:
 
 
 async def _apply_approved_fix(fix_id: str, record: dict) -> None:
-    """Apply a fix that was just approved by a human."""
+    """
+    Apply a fix that was just approved by a human. Records the outcome
+    (applied / pr_url / error) on the record so the dashboard can show what
+    happened instead of failing silently.
+    """
+    from types import SimpleNamespace
+    from agent.fix_applicator import FixApplicator, token_is_configured, GITHUB_TOKEN
+
+    record["applied_at"] = datetime.utcnow().isoformat()
+    fix_data = record.get("fix") or {}
+
+    # No usable token → don't attempt, and say exactly why.
+    if not token_is_configured(GITHUB_TOKEN):
+        record["applied"] = False
+        record["error"] = (
+            "GITHUB_TOKEN not configured (empty or still the .env placeholder). "
+            "Set a real token with write access to the repo in .env, then restart the backend."
+        )
+        log.info("approved_fix_no_token", fix_id=fix_id)
+        return
+
     try:
-        import os
-        fix_data = record["fix"]
+        event = _events.get(record["event_id"], {}).get("event", {})
 
-        # If no GitHub token, just mark as approved (can't open a PR)
-        if not os.getenv("GITHUB_TOKEN"):
-            record["applied"] = False
-            record["applied_at"] = datetime.utcnow().isoformat()
-            record["note"] = "GITHUB_TOKEN not set - fix approved but PR not opened. Set token in .env to enable auto-PR."
-            log.info("approved_fix_no_token", fix_id=fix_id)
-            return
-
-        from agent.fix_applicator import FixApplicator
-
-        event_record = _events.get(record["event_id"], {})
-        event = event_record.get("event", {})
+        # Rebuild a minimal fix object the applicator understands, with safe
+        # defaults so a missing key can never crash the apply.
+        fix = SimpleNamespace(
+            fix_id=fix_data.get("fix_id", fix_id),
+            description=fix_data.get("description", ""),
+            steps=fix_data.get("steps", []),
+            file_changes=fix_data.get("file_changes", {}) or {},
+            risk_level=SimpleNamespace(value=fix_data.get("risk_level", "high")),
+            estimated_step_count=fix_data.get("estimated_step_count", 0),
+            approval_reason=fix_data.get("approval_reason", ""),
+            pr_title=fix_data.get("pr_title", ""),
+            pr_body=fix_data.get("pr_body", ""),
+            pr_url=None,
+        )
 
         applicator = FixApplicator()
-
-        class _FixStub:
-            pass
-
-        stub = _FixStub()
-        stub.fix_id = fix_data["fix_id"]
-        stub.description = fix_data["description"]
-        stub.steps = fix_data["steps"]
-        stub.file_changes = fix_data["file_changes"]
-        stub.risk_level = type("R", (), {"value": fix_data["risk_level"]})()
-        stub.pr_title = fix_data.get("pr_title", "")
-        stub.pr_body = fix_data.get("pr_body", "")
-        stub.approval_reason = fix_data.get("approval_reason", "")
-        stub.pr_url = None
-
-        success = applicator.apply(stub, event)
+        success = applicator.apply(fix, event)
 
         record["applied"] = success
-        record["pr_url"] = getattr(stub, "pr_url", None)
-        record["applied_at"] = datetime.utcnow().isoformat()
-        log.info("approved_fix_applied", fix_id=fix_id, success=success)
+        record["pr_url"] = fix.pr_url
+        record["error"] = None if success else applicator.last_error
+        log.info("approved_fix_applied", fix_id=fix_id, success=success, pr_url=fix.pr_url)
 
     except Exception as exc:
         record["applied"] = False
-        record["applied_at"] = datetime.utcnow().isoformat()
+        record["error"] = f"{type(exc).__name__}: {exc}"
         log.error("approved_fix_apply_failed", fix_id=fix_id, error=str(exc))
 
 

@@ -138,15 +138,28 @@ export default function ApprovalsTab() {
             <div key={ap.fix_id} style={{
               background: '#151f2e', border: '1px solid #334155',
               borderRadius: 8, padding: '10px 16px', marginBottom: 8,
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}>
-              <span style={{ fontSize: 13 }}>Pipeline #{ap.pipeline_id} — {(ap.fix || {}).description}</span>
-              <span style={{
-                fontSize: 12, fontWeight: 600,
-                color: ap.status === 'approved' ? '#34d399' : '#f87171',
-              }}>
-                {ap.status.toUpperCase()}
-              </span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 13 }}>Pipeline #{ap.pipeline_id} — {(ap.fix || {}).description}</span>
+                <span style={{
+                  fontSize: 12, fontWeight: 600,
+                  color: ap.status === 'approved' ? '#34d399' : '#f87171',
+                }}>
+                  {ap.status.toUpperCase()}
+                </span>
+              </div>
+
+              {ap.status === 'approved' && ap.pr_url && (
+                <div style={{ fontSize: 12, marginTop: 6 }}>
+                  <span style={{ color: '#34d399' }}>✓ Branch + PR created: </span>
+                  <a href={ap.pr_url} target="_blank" rel="noreferrer" style={{ color: '#7dd3fc' }}>{ap.pr_url}</a>
+                </div>
+              )}
+              {ap.status === 'approved' && ap.applied === false && ap.error && (
+                <div style={{ fontSize: 12, marginTop: 6, color: '#f87171' }}>
+                  ✗ Fix not applied: {ap.error}
+                </div>
+              )}
             </div>
           ))}
         </div>

@@ -26,6 +26,12 @@ GITHUB_REPO_NAME = os.getenv("GITHUB_REPO_NAME", "Dummy_Pipeline")
 BASE_BRANCH = os.getenv("BASE_BRANCH", "main")
 
 
+def token_is_configured(token: str) -> bool:
+    """True only if the token is set to a real value, not empty or a .env placeholder."""
+    token = (token or "").strip()
+    return bool(token) and not token.startswith("<")
+
+
 class FixApplicator:
     """
     Applies a ProposedFix to a GitHub repository.
@@ -34,18 +40,29 @@ class FixApplicator:
     """
 
     def __init__(self):
-        if not GITHUB_TOKEN:
-            log.warning("github_token_missing", msg="GITHUB_TOKEN not set — fix application will be skipped")
+        # last_error holds a human-readable reason the most recent apply() failed,
+        # so callers (backend / dashboard) can show *why* instead of a silent False.
+        self.last_error: str | None = None
+        if not token_is_configured(GITHUB_TOKEN):
+            self.last_error = (
+                "GITHUB_TOKEN is not configured (empty or still the .env placeholder). "
+                "Set a real token with write access to the target repo in .env."
+            )
+            log.warning("github_token_missing", msg=self.last_error)
         self._gh = self._init_github_client()
 
     def apply(self, fix: "ProposedFix", event: dict[str, Any]) -> bool:  # noqa: F821
         """
         Commit file_changes to a new branch and open a PR.
 
-        Returns True on success, False on any error.
+        Returns True on success, False on any error. On failure, self.last_error
+        carries the reason.
         """
         if not self._gh:
-            log.warning("apply_skipped", reason="GitHub client not initialised")
+            # last_error was already set in __init__ for the token case; make sure
+            # there is always a reason.
+            self.last_error = self.last_error or "GitHub client not initialised"
+            log.warning("apply_skipped", reason=self.last_error)
             return False
 
         if not fix.file_changes:
@@ -105,10 +122,12 @@ class FixApplicator:
                 base=BASE_BRANCH,
             )
             fix.pr_url = pr.html_url
+            self.last_error = None
             log.info("pr_opened", pr_url=pr.html_url, fix_id=fix.fix_id)
             return True
 
         except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
             log.error("fix_apply_failed", fix_id=fix.fix_id, error=str(exc))
             return False
 
@@ -117,8 +136,8 @@ class FixApplicator:
     # ------------------------------------------------------------------
 
     def _init_github_client(self):
-        """Return a PyGithub Github instance, or None if token is missing."""
-        if not GITHUB_TOKEN:
+        """Return a PyGithub Github instance, or None if token is missing/placeholder."""
+        if not token_is_configured(GITHUB_TOKEN):
             return None
         try:
             from github import Github

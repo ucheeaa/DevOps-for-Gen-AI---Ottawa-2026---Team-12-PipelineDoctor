@@ -175,9 +175,15 @@ class PipelineDoctor:
 
     def _parse_event(self, event: dict) -> PipelineFailure:
         """Convert raw event dict into a PipelineFailure."""
-        # Map the dummy pipeline's category field to our FailureCategory enum
+        # The raw log body carries the real traceback. S3-delivered events only
+        # have header metadata, so `error` is often empty — distil it from the log.
+        raw_logs = event.get("raw_logs") or event.get("error") or ""
         error_text = event.get("error") or ""
-        category = self.analyzer._categorize(error_text)
+        if len(error_text.strip()) < 20 and raw_logs:
+            error_text = self.analyzer._extract_error_message(raw_logs)
+
+        # Categorize on the richest text available (full log beats a blank error field).
+        category = self.analyzer._categorize(raw_logs or error_text)
 
         # If the event itself carries a risky_change category, honour that
         if event.get("category") == "risky_change":
@@ -197,7 +203,7 @@ class PipelineDoctor:
             error_message=error_text,
             commit_sha=event.get("commit", ""),
             changed_files=event.get("changed_files", []),
-            raw_logs=event.get("raw_logs", error_text),
+            raw_logs=raw_logs,
             repo_owner=repo_owner,
             repo_name=repo_name,
             branch=event.get("branch", "main"),
@@ -228,9 +234,16 @@ class PipelineDoctor:
         if event.get("risky"):
             risky_note = f"\nAdditional risk context: {event.get('risk_reason', '')}"
 
+        # The full log and the actual repo source are what let Claude diagnose the
+        # real cause instead of guessing from a one-line (or empty) error field.
+        raw_log_block = (failure.raw_logs or failure.error_message or "").strip()[:4000] or "(no log body)"
+        source_block = self._fetch_repo_files(failure)
+
         system_prompt = (
             "You are Pipeline Doctor, an expert DevOps AI assistant. "
             "Your job is to diagnose CI/CD pipeline failures accurately and concisely. "
+            "Base your diagnosis on the actual failure log and repository source below — "
+            "do not speculate about infrastructure or platforms not shown in the evidence. "
             "Always structure your response as JSON."
         )
 
@@ -243,6 +256,11 @@ Error: {failure.error_message}
 Changed files: {', '.join(failure.changed_files) or 'none'}
 Commit: {failure.commit_sha}
 Category hint: {failure.category}{risky_note}
+
+Full failure log:
+{raw_log_block}
+
+{source_block}
 
 Relevant runbook knowledge:
 {rag_block}
@@ -358,44 +376,6 @@ Keep steps minimal and safe. Only include files that actually need changing."""
             pr_body=data.get("pr_body", ""),
         )
 
-    def _fetch_repo_files(self, failure: PipelineFailure) -> str:
-        """
-        Fetch the actual source code of changed files from GitHub.
-        Returns a formatted block to include in the Bedrock prompt.
-        """
-        token = os.getenv("GITHUB_TOKEN", "")
-        if not token:
-            log.info("github_token_missing_for_source_fetch")
-            return "Source code not available (GITHUB_TOKEN not set)."
-
-        try:
-            from github import Github
-            gh = Github(token)
-            repo = gh.get_repo(f"{failure.repo_owner}/{failure.repo_name}")
-
-            file_blocks = []
-            files_to_read = failure.changed_files[:5]  # limit to 5 files max
-
-            for filepath in files_to_read:
-                try:
-                    content = repo.get_contents(filepath, ref=failure.branch)
-                    text = content.decoded_content.decode("utf-8")
-                    # Truncate very large files
-                    if len(text) > 3000:
-                        text = text[:3000] + "\n... (truncated)"
-                    file_blocks.append(f"--- {filepath} ---\n{text}\n--- end {filepath} ---")
-                except Exception as exc:
-                    file_blocks.append(f"--- {filepath} ---\n(could not read: {exc})\n--- end {filepath} ---")
-
-            if file_blocks:
-                return "ACTUAL SOURCE CODE FROM REPOSITORY:\n\n" + "\n\n".join(file_blocks)
-            else:
-                return "No changed files to read."
-
-        except Exception as exc:
-            log.warning("source_fetch_failed", error=str(exc))
-            return f"Source code fetch failed: {exc}"
-
     def _auto_fix(self, fix: ProposedFix, event: dict) -> bool:
         """Apply the fix automatically by committing changes via GitHub API."""
         self._trace("applying_auto_fix", fix_id=fix.fix_id, files=list(fix.file_changes.keys()))
@@ -415,42 +395,6 @@ Keep steps minimal and safe. Only include files that actually need changing."""
         )
         return success
 
-    def _fetch_repo_files(self, failure: PipelineFailure) -> str:
-        """
-        Fetch the actual source code of changed files from GitHub.
-        This gives Claude the real file content to propose an accurate fix.
-        """
-        token = os.getenv("GITHUB_TOKEN", "")
-        if not token:
-            return "Source code not available (GITHUB_TOKEN not set)."
-
-        try:
-            from github import Github
-            gh = Github(token)
-            repo = gh.get_repo(f"{failure.repo_owner}/{failure.repo_name}")
-
-            blocks = []
-            files_to_read = failure.changed_files[:5]  # limit to 5 files
-
-            for filepath in files_to_read:
-                try:
-                    content = repo.get_contents(filepath, ref=failure.branch)
-                    if content.size > 10000:
-                        file_text = content.decoded_content.decode("utf-8")[:10000] + "\n... (truncated)"
-                    else:
-                        file_text = content.decoded_content.decode("utf-8")
-                    blocks.append(f"--- FILE: {filepath} ---\n{file_text}\n--- END FILE ---")
-                except Exception:
-                    blocks.append(f"--- FILE: {filepath} --- (could not read)")
-
-            if blocks:
-                return "CURRENT SOURCE CODE FROM REPOSITORY:\n\n" + "\n\n".join(blocks)
-            return "No source files could be read."
-
-        except Exception as exc:
-            log.warning("fetch_repo_files_failed", error=str(exc))
-            return f"Source code fetch failed: {exc}"
-
     def _request_human_approval(self, fix: ProposedFix, event: dict) -> None:
         """Persist the fix as AWAITING_APPROVAL and notify via Slack + dashboard."""
         self._trace("requesting_human_approval", fix_id=fix.fix_id, reason=fix.approval_reason)
@@ -464,16 +408,9 @@ Keep steps minimal and safe. Only include files that actually need changing."""
         except Exception as exc:
             log.warning("slack_notify_failed", error=str(exc))
 
-        # Persist to backend (best-effort)
-        try:
-            import httpx
-            httpx.post(
-                f"{BACKEND_URL}/api/approvals",
-                json=self._fix_to_dict(fix),
-                timeout=5.0,
-            )
-        except Exception as exc:
-            log.warning("backend_persist_failed", error=str(exc))
+        # The dashboard picks up this approval from the result the Lambda writes to
+        # S3 (backend._load_from_s3 reconstructs it). No direct POST needed — the
+        # backend has no POST /api/approvals endpoint.
 
     # ------------------------------------------------------------------
     # Helpers
@@ -485,7 +422,7 @@ Keep steps minimal and safe. Only include files that actually need changing."""
         Returns a formatted block to include in the Bedrock prompt.
         """
         token = os.getenv("GITHUB_TOKEN", "")
-        if not token:
+        if not token or token.startswith("<"):
             return "(GITHUB_TOKEN not set - cannot read source code from repo)"
 
         try:
