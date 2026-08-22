@@ -16,14 +16,29 @@ cd Pipeline-Doctor
 - AWS CLI v2 (`aws --version` to check, `brew install awscli` if missing)
 
 ### 3. Authenticate with AWS
+
+**If you are the account owner (Uchenna):**
 ```bash
 aws login
 ```
-Verify it worked:
+
+**If you are a teammate using shared credentials:**
+```bash
+aws configure
+```
+It will ask for:
+- **AWS Access Key ID**: (the access key Uchenna shared with you)
+- **AWS Secret Access Key**: (the secret key Uchenna shared with you)
+- **Default region name**: `us-east-1`
+- **Default output format**: `json`
+
+**Verify it worked (everyone):**
 ```bash
 aws sts get-caller-identity
 ```
-You should see your account ID. If it says "expired" or "no credentials", re-run `aws login`.
+You should see the account ID `714665049802`. If it says "expired" or "no credentials":
+- Account owner: re-run `aws login`
+- Teammates: re-run `aws configure` and double-check the keys
 
 ### 4. Make sure Bedrock Claude is enabled
 Go to AWS Console > Amazon Bedrock > Model access (us-east-1 region) and make sure Claude Sonnet is enabled. If not, click "Manage model access" and enable it.
@@ -54,9 +69,11 @@ Click any of the scenario buttons in the **Demo Panel** at the top of the dashbo
 
 ### Troubleshooting
 - **Dark blue screen / nothing renders**: Open browser console (Cmd+Option+J) and check for errors. Try hard refresh (Cmd+Shift+R).
-- **AWS expired session**: Run `aws login` again in the terminal where you start the backend.
+- **AWS expired session / credential errors**: Run `aws configure` again with the shared team credentials.
+- **`botocore.exceptions.NoCredentialsError`**: You haven't run `aws configure` yet, or the keys are wrong.
 - **`ModuleNotFoundError` when starting backend**: Make sure you ran `source .venv/bin/activate` first.
 - **Port already in use**: Kill the old process with `lsof -ti:8000 | xargs kill` or use a different port.
+- **Bedrock `AccessDeniedException`**: Bedrock model access isn't enabled. Go to AWS Console > Bedrock > Model access in us-east-1 and enable Claude Sonnet.
 
 ## Prerequisites
 
