@@ -355,9 +355,48 @@ Keep steps minimal and safe. Only include files that actually need changing."""
             pr_body=data.get("pr_body", ""),
         )
 
+    def _fetch_repo_files(self, failure: PipelineFailure) -> str:
+        """
+        Fetch the actual source code of changed files from GitHub.
+        Returns a formatted block to include in the Bedrock prompt.
+        """
+        token = os.getenv("GITHUB_TOKEN", "")
+        if not token:
+            log.info("github_token_missing_for_source_fetch")
+            return "Source code not available (GITHUB_TOKEN not set)."
+
+        try:
+            from github import Github
+            gh = Github(token)
+            repo = gh.get_repo(f"{failure.repo_owner}/{failure.repo_name}")
+
+            file_blocks = []
+            files_to_read = failure.changed_files[:5]  # limit to 5 files max
+
+            for filepath in files_to_read:
+                try:
+                    content = repo.get_contents(filepath, ref=failure.branch)
+                    text = content.decoded_content.decode("utf-8")
+                    # Truncate very large files
+                    if len(text) > 3000:
+                        text = text[:3000] + "\n... (truncated)"
+                    file_blocks.append(f"--- {filepath} ---\n{text}\n--- end {filepath} ---")
+                except Exception as exc:
+                    file_blocks.append(f"--- {filepath} ---\n(could not read: {exc})\n--- end {filepath} ---")
+
+            if file_blocks:
+                return "ACTUAL SOURCE CODE FROM REPOSITORY:\n\n" + "\n\n".join(file_blocks)
+            else:
+                return "No changed files to read."
+
+        except Exception as exc:
+            log.warning("source_fetch_failed", error=str(exc))
+            return f"Source code fetch failed: {exc}"
+
     def _auto_fix(self, fix: ProposedFix, event: dict) -> bool:
         """Apply the fix automatically by committing changes via GitHub API."""
         self._trace("applying_auto_fix", fix_id=fix.fix_id, files=list(fix.file_changes.keys()))
+
 
         # Import here to avoid circular deps at module load time
         from agent.fix_applicator import FixApplicator
@@ -372,6 +411,42 @@ Keep steps minimal and safe. Only include files that actually need changing."""
             success=success,
         )
         return success
+
+    def _fetch_repo_files(self, failure: PipelineFailure) -> str:
+        """
+        Fetch the actual source code of changed files from GitHub.
+        This gives Claude the real file content to propose an accurate fix.
+        """
+        token = os.getenv("GITHUB_TOKEN", "")
+        if not token:
+            return "Source code not available (GITHUB_TOKEN not set)."
+
+        try:
+            from github import Github
+            gh = Github(token)
+            repo = gh.get_repo(f"{failure.repo_owner}/{failure.repo_name}")
+
+            blocks = []
+            files_to_read = failure.changed_files[:5]  # limit to 5 files
+
+            for filepath in files_to_read:
+                try:
+                    content = repo.get_contents(filepath, ref=failure.branch)
+                    if content.size > 10000:
+                        file_text = content.decoded_content.decode("utf-8")[:10000] + "\n... (truncated)"
+                    else:
+                        file_text = content.decoded_content.decode("utf-8")
+                    blocks.append(f"--- FILE: {filepath} ---\n{file_text}\n--- END FILE ---")
+                except Exception:
+                    blocks.append(f"--- FILE: {filepath} --- (could not read)")
+
+            if blocks:
+                return "CURRENT SOURCE CODE FROM REPOSITORY:\n\n" + "\n\n".join(blocks)
+            return "No source files could be read."
+
+        except Exception as exc:
+            log.warning("fetch_repo_files_failed", error=str(exc))
+            return f"Source code fetch failed: {exc}"
 
     def _request_human_approval(self, fix: ProposedFix, event: dict) -> None:
         """Persist the fix as AWAITING_APPROVAL and notify via Slack + dashboard."""
@@ -400,6 +475,49 @@ Keep steps minimal and safe. Only include files that actually need changing."""
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _fetch_repo_files(self, failure: "PipelineFailure") -> str:
+        """
+        Fetch the actual source code of changed files from GitHub.
+        Returns a formatted block to include in the Bedrock prompt.
+        """
+        token = os.getenv("GITHUB_TOKEN", "")
+        if not token:
+            return "(GITHUB_TOKEN not set - cannot read source code from repo)"
+
+        try:
+            from github import Github
+            gh = Github(token)
+            repo = gh.get_repo(f"{failure.repo_owner}/{failure.repo_name}")
+
+            file_blocks = []
+            files_to_read = failure.changed_files[:5]  # limit to 5 files
+
+            # Also read files mentioned in the error if not in changed_files
+            if failure.category.value == "missing_dependency":
+                if "requirements.txt" not in files_to_read:
+                    files_to_read.append("requirements.txt")
+                if "package.json" not in files_to_read:
+                    files_to_read.append("package.json")
+
+            for filepath in files_to_read:
+                try:
+                    content = repo.get_contents(filepath, ref=failure.branch)
+                    if content.size > 10000:  # skip huge files
+                        file_blocks.append(f"--- {filepath} (skipped - too large: {content.size} bytes) ---")
+                    else:
+                        decoded = content.decoded_content.decode("utf-8")
+                        file_blocks.append(f"--- {filepath} ---\n{decoded}\n--- end {filepath} ---")
+                except Exception:
+                    file_blocks.append(f"--- {filepath} (not found in repo) ---")
+
+            if file_blocks:
+                return "ACTUAL SOURCE CODE FROM REPOSITORY:\n\n" + "\n\n".join(file_blocks)
+            return "(no source files could be read)"
+
+        except Exception as exc:
+            log.warning("fetch_repo_files_failed", error=str(exc))
+            return f"(failed to fetch source: {exc})"
 
     def _trace(self, action: str, **kwargs) -> None:
         entry = {"action": action, "timestamp": datetime.utcnow().isoformat(), **kwargs}

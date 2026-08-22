@@ -24,9 +24,12 @@ from datetime import datetime
 from typing import Any, Optional
 
 import structlog
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+load_dotenv()  # Load .env file
 
 log = structlog.get_logger(__name__)
 
