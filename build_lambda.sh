@@ -18,8 +18,11 @@ cp lambda/__init__.py deploy_package/lambda/
 
 # Create the top-level handler that Lambda expects
 cat > deploy_package/lambda_handler.py << 'EOF'
-"""Top-level Lambda handler that delegates to s3_trigger."""
-from lambda.s3_trigger import handler
+"""Top-level Lambda handler."""
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lambda"))
+from s3_trigger import handler
 EOF
 
 echo "Done! Deploy package at: deploy_package/"

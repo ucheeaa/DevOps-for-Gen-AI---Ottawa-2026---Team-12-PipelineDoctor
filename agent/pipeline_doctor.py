@@ -30,9 +30,11 @@ from typing import Any, Optional
 
 import boto3
 import structlog
-from dotenv import load_dotenv
-
-load_dotenv()  # Load .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not needed in Lambda (env vars set directly)
 
 from agent.models import (
     DiagnosisResult,
